@@ -1,0 +1,7 @@
+{
+  "name": "CommuniCoach AI",
+  "description": "A comprehensive AI-powered communication coach providing real-time feedback on fluency, tone, and body language through live roleplay and structured assessment.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
