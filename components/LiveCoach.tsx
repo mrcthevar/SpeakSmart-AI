@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Play, Square, User, Bot, AlertCircle, Loader2, Key, Settings } from 'lucide-react';
+import { Mic, MicOff, Play, Square, User, Bot, AlertCircle, Loader2, Key, Settings, Save } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { LiveCoachSession, generateAssessmentFeedback } from '../services/geminiService';
 import { RoleplayScenario, SessionResult } from '../types';
@@ -44,7 +44,7 @@ const LiveCoach = () => {
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   
   const [hasApiKey, setHasApiKey] = useState(false);
-  const [isAIStudio, setIsAIStudio] = useState(false);
+  const [manualKey, setManualKey] = useState("");
   
   const liveSessionRef = useRef<LiveCoachSession | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -59,33 +59,35 @@ const LiveCoach = () => {
     }
   }, [location.state]);
 
-  // Check for API Key
+  // Check for API Key on mount
   useEffect(() => {
-    const checkKey = async () => {
-        // Check environment variable safely
-        let envKey = false;
-        try {
-            if (process.env.API_KEY) envKey = true;
-        } catch(e) {
-            // process is not defined
-        }
-
-        if (envKey) {
-            setHasApiKey(true);
-            return;
-        }
-
-        // Check for AI Studio injected client
-        const studio = (window as any).aistudio;
-        setIsAIStudio(!!studio);
-        
-        if (studio) {
-            const selected = await studio.hasSelectedApiKey();
-            setHasApiKey(selected);
-        }
-    };
     checkKey();
   }, []);
+
+  const checkKey = async () => {
+    // 1. Local Storage
+    if (localStorage.getItem("gemini_api_key")) {
+        setHasApiKey(true);
+        return;
+    }
+
+    // 2. Env Var
+    let envKey = false;
+    try {
+        if (process.env.API_KEY) envKey = true;
+    } catch(e) {}
+    if (envKey) {
+        setHasApiKey(true);
+        return;
+    }
+
+    // 3. AI Studio
+    const studio = (window as any).aistudio;
+    if (studio) {
+        const selected = await studio.hasSelectedApiKey();
+        if (selected) setHasApiKey(true);
+    }
+  };
 
   useEffect(() => {
     return () => {
@@ -96,22 +98,33 @@ const LiveCoach = () => {
     };
   }, []);
 
+  const handleSaveManualKey = () => {
+      if(manualKey.trim().length > 10) {
+          localStorage.setItem("gemini_api_key", manualKey.trim());
+          setHasApiKey(true);
+          setError(null);
+      } else {
+          setError("Invalid API Key");
+      }
+  };
+
   const handleStart = async () => {
     if (!hasApiKey) {
-        const studio = (window as any).aistudio;
-        if (studio) {
-            try {
-                await studio.openSelectKey();
-                setHasApiKey(true);
-                setError(null);
-            } catch (e) {
-                console.error(e);
-                setError("Failed to select API Key.");
-            }
-        } else {
-            setError("Please configure your API_KEY in the environment settings.");
+        // Double check
+        await checkKey();
+        if(!hasApiKey) {
+             const studio = (window as any).aistudio;
+             if (studio) {
+                try {
+                    await studio.openSelectKey();
+                    setHasApiKey(true);
+                    setError(null);
+                } catch (e) {
+                     // ignore
+                }
+             }
+             return;
         }
-        return;
     }
     startSession();
   };
@@ -215,23 +228,37 @@ const LiveCoach = () => {
         </div>
 
         {/* Configuration Alert */}
-        {!hasApiKey && !isAIStudio && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 flex items-start gap-4 animate-fade-in">
-                <div className="p-2 bg-amber-100 rounded-lg text-amber-600 shrink-0">
-                    <Settings size={24} />
-                </div>
-                <div>
-                    <h3 className="font-bold text-amber-900">Setup Required</h3>
-                    <p className="text-amber-800 mt-1 text-sm">
-                        No API Key detected.
-                    </p>
-                    <div className="text-amber-800 text-sm mt-2 space-y-2">
-                        <p>To fix this in <strong>Cloudflare Pages</strong>:</p>
-                        <ol className="list-decimal list-inside ml-2">
-                            <li>Go to <strong>Settings &gt; Environment variables</strong>.</li>
-                            <li>Add <code>API_KEY</code> with your Google AI Studio key.</li>
-                            <li><strong>Redeploy</strong> your project (Deployments &gt; Retry deployment).</li>
-                        </ol>
+        {!hasApiKey && (
+            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm animate-fade-in">
+                <div className="flex items-start gap-4">
+                    <div className="p-2 bg-indigo-100 rounded-lg text-indigo-600 shrink-0">
+                        <Key size={24} />
+                    </div>
+                    <div className="flex-1">
+                        <h3 className="font-bold text-slate-900">Setup API Key</h3>
+                        <p className="text-slate-600 mt-1 text-sm">
+                            We couldn't detect an API Key from the environment. Please enter it below to start.
+                        </p>
+                        
+                        <div className="mt-4 flex flex-col sm:flex-row gap-3">
+                            <input 
+                                type="password" 
+                                placeholder="Paste your Gemini API Key here..."
+                                value={manualKey}
+                                onChange={(e) => setManualKey(e.target.value)}
+                                className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none text-sm"
+                            />
+                            <button 
+                                onClick={handleSaveManualKey}
+                                disabled={!manualKey}
+                                className="px-6 py-2 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                            >
+                                <Save size={16} /> Save Key
+                            </button>
+                        </div>
+                        <p className="mt-2 text-xs text-slate-400">
+                            Stored locally in your browser. Get a key from <a href="https://aistudio.google.com/" target="_blank" rel="noreferrer" className="underline hover:text-indigo-600">Google AI Studio</a>.
+                        </p>
                     </div>
                 </div>
             </div>
@@ -329,17 +356,15 @@ const LiveCoach = () => {
                 {!isConnected ? (
                     <button 
                         onClick={handleStart}
-                        disabled={isGeneratingReport || (!hasApiKey && !isAIStudio)}
+                        disabled={isGeneratingReport || !hasApiKey}
                         className={`flex items-center gap-3 text-white px-8 py-4 rounded-full font-bold text-lg shadow-xl transition-all ${
-                            !hasApiKey && !isAIStudio 
+                            !hasApiKey 
                             ? 'bg-slate-400 cursor-not-allowed shadow-none'
-                            : hasApiKey 
-                                ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' 
-                                : 'bg-slate-700 hover:bg-slate-800 shadow-slate-300'
+                            : 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'
                         }`}
                     >
                          {!hasApiKey ? <Key size={20} /> : <Play fill="currentColor" />}
-                         {!hasApiKey ? (isAIStudio ? 'Select API Key' : 'Setup API Key First') : 'Start Session'}
+                         {!hasApiKey ? 'Enter API Key Above' : 'Start Session'}
                     </button>
                 ) : (
                     <>

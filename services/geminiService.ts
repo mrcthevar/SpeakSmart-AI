@@ -3,6 +3,22 @@ import { createPCM16Blob, decodeAudioData } from "../utils";
 
 // Helper to safely get API key
 const getApiKey = (): string | undefined => {
+  // 1. Check Local Storage (Manual Override)
+  if (typeof localStorage !== 'undefined') {
+    const stored = localStorage.getItem("gemini_api_key");
+    if (stored) return stored;
+  }
+
+  // 2. Check Vite/Modern Env
+  try {
+    // @ts-ignore
+    if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) {
+       // @ts-ignore
+       return import.meta.env.VITE_API_KEY;
+    }
+  } catch(e) {}
+
+  // 3. Check Process Env
   try {
     return process.env.API_KEY;
   } catch (e) {
