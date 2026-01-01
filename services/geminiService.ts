@@ -1,13 +1,22 @@
 import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
 import { createPCM16Blob, decodeAudioData } from "../utils";
 
+// Helper to safely get API key
+const getApiKey = (): string | undefined => {
+  try {
+    return process.env.API_KEY;
+  } catch (e) {
+    return undefined;
+  }
+};
+
 // --- Content Generation (Assessment, Feedback) ---
 
 export const generateAssessmentFeedback = async (
   transcript: string, 
   context: string
 ): Promise<any> => {
-  const apiKey = process.env.API_KEY;
+  const apiKey = getApiKey();
   if (!apiKey) throw new Error("API Key missing");
 
   // Initialize client with current key
@@ -108,7 +117,7 @@ export class LiveCoachSession {
   }
 
   async connect(systemInstruction: string, voiceName: string = 'Kore') {
-    const apiKey = process.env.API_KEY;
+    const apiKey = getApiKey();
     if (!apiKey) {
       this.callbacks.onError("API Key is missing. Please select a key.");
       return;

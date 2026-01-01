@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Play, Square, User, Bot, AlertCircle, Loader2, Key } from 'lucide-react';
+import { Mic, MicOff, Play, Square, User, Bot, AlertCircle, Loader2, Key, Settings } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { LiveCoachSession, generateAssessmentFeedback } from '../services/geminiService';
 import { RoleplayScenario, SessionResult } from '../types';
@@ -42,7 +42,9 @@ const LiveCoach = () => {
   const [sessionDuration, setSessionDuration] = useState(0);
   const [isTalking, setIsTalking] = useState<'user' | 'ai' | 'idle'>('idle');
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  
   const [hasApiKey, setHasApiKey] = useState(false);
+  const [isAIStudio, setIsAIStudio] = useState(false);
   
   const liveSessionRef = useRef<LiveCoachSession | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -60,13 +62,25 @@ const LiveCoach = () => {
   // Check for API Key
   useEffect(() => {
     const checkKey = async () => {
-        if (process.env.API_KEY) {
+        // Check environment variable safely
+        let envKey = false;
+        try {
+            if (process.env.API_KEY) envKey = true;
+        } catch(e) {
+            // process is not defined
+        }
+
+        if (envKey) {
             setHasApiKey(true);
             return;
         }
-        const aistudio = (window as any).aistudio;
-        if (aistudio) {
-            const selected = await aistudio.hasSelectedApiKey();
+
+        // Check for AI Studio injected client
+        const studio = (window as any).aistudio;
+        setIsAIStudio(!!studio);
+        
+        if (studio) {
+            const selected = await studio.hasSelectedApiKey();
             setHasApiKey(selected);
         }
     };
@@ -75,7 +89,6 @@ const LiveCoach = () => {
 
   useEffect(() => {
     return () => {
-        // Cleanup if component unmounts
         if (liveSessionRef.current) {
             liveSessionRef.current.disconnect();
         }
@@ -85,11 +98,10 @@ const LiveCoach = () => {
 
   const handleStart = async () => {
     if (!hasApiKey) {
-        const aistudio = (window as any).aistudio;
-        if (aistudio) {
+        const studio = (window as any).aistudio;
+        if (studio) {
             try {
-                await aistudio.openSelectKey();
-                // Assume success after dialog close as per pattern
+                await studio.openSelectKey();
                 setHasApiKey(true);
                 setError(null);
             } catch (e) {
@@ -97,7 +109,7 @@ const LiveCoach = () => {
                 setError("Failed to select API Key.");
             }
         } else {
-            setError("API Key is missing. Please check your configuration.");
+            setError("Please configure your API_KEY in the environment settings.");
         }
         return;
     }
@@ -145,7 +157,6 @@ const LiveCoach = () => {
     setIsConnected(false);
     stopTimer();
 
-    // Only generate report if session had some length
     if (sessionDuration > 5) {
         setIsGeneratingReport(true);
         try {
@@ -160,7 +171,7 @@ const LiveCoach = () => {
                 overallScore: feedback.overallScore,
                 metrics: feedback.metrics,
                 improvementTips: feedback.improvementTips,
-                transcript: transcript // Optional: save transcript if you want
+                transcript: transcript
             };
             
             addSession(newSession);
@@ -198,11 +209,33 @@ const LiveCoach = () => {
 
   return (
     <div className="h-full flex flex-col space-y-6">
-        {/* Header */}
         <div>
             <h1 className="text-3xl font-bold text-slate-900">Live AI Coach</h1>
             <p className="text-slate-500 mt-2">Real-time voice practice with instant feedback.</p>
         </div>
+
+        {/* Configuration Alert */}
+        {!hasApiKey && !isAIStudio && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 flex items-start gap-4 animate-fade-in">
+                <div className="p-2 bg-amber-100 rounded-lg text-amber-600 shrink-0">
+                    <Settings size={24} />
+                </div>
+                <div>
+                    <h3 className="font-bold text-amber-900">Setup Required</h3>
+                    <p className="text-amber-800 mt-1 text-sm">
+                        No API Key detected.
+                    </p>
+                    <div className="text-amber-800 text-sm mt-2 space-y-2">
+                        <p>To fix this in <strong>Cloudflare Pages</strong>:</p>
+                        <ol className="list-decimal list-inside ml-2">
+                            <li>Go to <strong>Settings &gt; Environment variables</strong>.</li>
+                            <li>Add <code>API_KEY</code> with your Google AI Studio key.</li>
+                            <li><strong>Redeploy</strong> your project (Deployments &gt; Retry deployment).</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        )}
 
         {/* Scenario Selector */}
         {!isConnected && !isGeneratingReport && (
@@ -226,7 +259,6 @@ const LiveCoach = () => {
 
         {/* Main Interface */}
         <div className="flex-1 bg-white rounded-3xl shadow-sm border border-slate-100 relative overflow-hidden flex flex-col">
-            {/* Visualizer Area */}
             <div className="flex-1 flex items-center justify-center bg-slate-900 relative">
                 
                 {isGeneratingReport && (
@@ -237,7 +269,6 @@ const LiveCoach = () => {
                     </div>
                 )}
 
-                {/* Status Indicator */}
                 <div className="absolute top-6 left-6 flex items-center gap-2">
                     <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`}></div>
                     <span className="text-white text-sm font-medium">{isConnected ? 'Live Session' : 'Ready to Start'}</span>
@@ -247,7 +278,6 @@ const LiveCoach = () => {
                     {formatTime(sessionDuration)}
                 </div>
 
-                {/* Central Visual */}
                 <div className="relative z-10 text-center">
                     {isConnected ? (
                         <div className="space-y-8">
@@ -260,7 +290,6 @@ const LiveCoach = () => {
                                 </div>
                                 
                                 <div className="h-1 w-24 bg-slate-800 rounded-full overflow-hidden">
-                                     {/* Audio activity line */}
                                      {(isTalking === 'user' || isTalking === 'ai') && (
                                          <div className="h-full bg-indigo-500 animate-pulse w-full"></div>
                                      )}
@@ -293,24 +322,24 @@ const LiveCoach = () => {
                     )}
                 </div>
 
-                {/* Background Decor */}
                 <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-slate-800 to-slate-900 opacity-50"></div>
             </div>
 
-            {/* Controls */}
             <div className="p-8 bg-slate-50 border-t border-slate-200 flex justify-center items-center gap-6">
                 {!isConnected ? (
                     <button 
                         onClick={handleStart}
-                        disabled={isGeneratingReport}
-                        className={`flex items-center gap-3 text-white px-8 py-4 rounded-full font-bold text-lg shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
-                            hasApiKey 
-                            ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'
-                            : 'bg-slate-700 hover:bg-slate-800 shadow-slate-300'
+                        disabled={isGeneratingReport || (!hasApiKey && !isAIStudio)}
+                        className={`flex items-center gap-3 text-white px-8 py-4 rounded-full font-bold text-lg shadow-xl transition-all ${
+                            !hasApiKey && !isAIStudio 
+                            ? 'bg-slate-400 cursor-not-allowed shadow-none'
+                            : hasApiKey 
+                                ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200' 
+                                : 'bg-slate-700 hover:bg-slate-800 shadow-slate-300'
                         }`}
                     >
                          {!hasApiKey ? <Key size={20} /> : <Play fill="currentColor" />}
-                         {!hasApiKey ? 'Select API Key' : 'Start Session'}
+                         {!hasApiKey ? (isAIStudio ? 'Select API Key' : 'Setup API Key First') : 'Start Session'}
                     </button>
                 ) : (
                     <>
@@ -328,7 +357,7 @@ const LiveCoach = () => {
             </div>
             
              {error && (
-                <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-100 text-red-700 px-4 py-2 rounded-lg flex items-center gap-2 text-sm shadow-md">
+                <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-100 text-red-700 px-4 py-2 rounded-lg flex items-center gap-2 text-sm shadow-md animate-fade-in">
                     <AlertCircle size={16} />
                     {error}
                 </div>
