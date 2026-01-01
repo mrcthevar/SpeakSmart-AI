@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Play, Square, User, Bot, AlertCircle } from 'lucide-react';
+import { Mic, MicOff, Play, Square, User, Bot, AlertCircle, Loader2, Key } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
-import { LiveCoachSession } from '../services/geminiService';
+import { LiveCoachSession, generateAssessmentFeedback } from '../services/geminiService';
 import { RoleplayScenario, SessionResult } from '../types';
 import { useApp } from '../context/AppContext';
 
@@ -41,6 +41,8 @@ const LiveCoach = () => {
   const [error, setError] = useState<string | null>(null);
   const [sessionDuration, setSessionDuration] = useState(0);
   const [isTalking, setIsTalking] = useState<'user' | 'ai' | 'idle'>('idle');
+  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
+  const [hasApiKey, setHasApiKey] = useState(false);
   
   const liveSessionRef = useRef<LiveCoachSession | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -55,11 +57,52 @@ const LiveCoach = () => {
     }
   }, [location.state]);
 
+  // Check for API Key
+  useEffect(() => {
+    const checkKey = async () => {
+        if (process.env.API_KEY) {
+            setHasApiKey(true);
+            return;
+        }
+        const aistudio = (window as any).aistudio;
+        if (aistudio) {
+            const selected = await aistudio.hasSelectedApiKey();
+            setHasApiKey(selected);
+        }
+    };
+    checkKey();
+  }, []);
+
   useEffect(() => {
     return () => {
-      stopSession();
+        // Cleanup if component unmounts
+        if (liveSessionRef.current) {
+            liveSessionRef.current.disconnect();
+        }
+        if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
+
+  const handleStart = async () => {
+    if (!hasApiKey) {
+        const aistudio = (window as any).aistudio;
+        if (aistudio) {
+            try {
+                await aistudio.openSelectKey();
+                // Assume success after dialog close as per pattern
+                setHasApiKey(true);
+                setError(null);
+            } catch (e) {
+                console.error(e);
+                setError("Failed to select API Key.");
+            }
+        } else {
+            setError("API Key is missing. Please check your configuration.");
+        }
+        return;
+    }
+    startSession();
+  };
 
   const startSession = async () => {
     setError(null);
@@ -91,32 +134,46 @@ const LiveCoach = () => {
     await liveSessionRef.current.connect(selectedScenario.instruction);
   };
 
-  const stopSession = () => {
+  const stopSession = async () => {
+    let transcript = "";
     if (liveSessionRef.current) {
+      transcript = liveSessionRef.current.getTranscript();
       liveSessionRef.current.disconnect();
       liveSessionRef.current = null;
     }
+    
     setIsConnected(false);
     stopTimer();
-    
-    // Save dummy session data on stop for the demo
-    if (sessionDuration > 10) {
-        const newSession: SessionResult = {
-            id: Date.now().toString(),
-            date: new Date().toISOString(),
-            type: 'Roleplay',
-            topic: selectedScenario.title,
-            durationSeconds: sessionDuration,
-            overallScore: Math.floor(Math.random() * (95 - 70) + 70), // Mock score
-            metrics: [
-                { category: 'Clarity', score: 85, details: 'Good enunciation.' },
-                { category: 'Pace', score: 78, details: 'Conversational pace.' }
-            ],
-            improvementTips: ['Try to use more variety in vocabulary.', 'Pause less between sentences.']
-        };
-        addSession(newSession);
+
+    // Only generate report if session had some length
+    if (sessionDuration > 5) {
+        setIsGeneratingReport(true);
+        try {
+            const feedback = await generateAssessmentFeedback(transcript, selectedScenario.instruction);
+            
+            const newSession: SessionResult = {
+                id: Date.now().toString(),
+                date: new Date().toISOString(),
+                type: 'Roleplay',
+                topic: selectedScenario.title,
+                durationSeconds: sessionDuration,
+                overallScore: feedback.overallScore,
+                metrics: feedback.metrics,
+                improvementTips: feedback.improvementTips,
+                transcript: transcript // Optional: save transcript if you want
+            };
+            
+            addSession(newSession);
+        } catch (e) {
+            setError("Failed to generate session report.");
+            console.error(e);
+        } finally {
+            setIsGeneratingReport(false);
+            setSessionDuration(0);
+        }
+    } else {
+        setSessionDuration(0);
     }
-    setSessionDuration(0);
   };
 
   const startTimer = () => {
@@ -148,7 +205,7 @@ const LiveCoach = () => {
         </div>
 
         {/* Scenario Selector */}
-        {!isConnected && (
+        {!isConnected && !isGeneratingReport && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in">
                 {scenarios.map(sc => (
                     <div 
@@ -172,6 +229,14 @@ const LiveCoach = () => {
             {/* Visualizer Area */}
             <div className="flex-1 flex items-center justify-center bg-slate-900 relative">
                 
+                {isGeneratingReport && (
+                    <div className="absolute inset-0 z-20 bg-slate-900/90 flex flex-col items-center justify-center text-white">
+                        <Loader2 size={48} className="animate-spin text-indigo-500 mb-4" />
+                        <h2 className="text-xl font-bold">Generating Feedback...</h2>
+                        <p className="text-slate-400">Analyzing your tone, pace, and clarity.</p>
+                    </div>
+                )}
+
                 {/* Status Indicator */}
                 <div className="absolute top-6 left-6 flex items-center gap-2">
                     <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-slate-500'}`}></div>
@@ -236,11 +301,16 @@ const LiveCoach = () => {
             <div className="p-8 bg-slate-50 border-t border-slate-200 flex justify-center items-center gap-6">
                 {!isConnected ? (
                     <button 
-                        onClick={startSession}
-                        disabled={!process.env.API_KEY}
-                        className="flex items-center gap-3 bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-4 rounded-full font-bold text-lg shadow-xl shadow-indigo-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={handleStart}
+                        disabled={isGeneratingReport}
+                        className={`flex items-center gap-3 text-white px-8 py-4 rounded-full font-bold text-lg shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                            hasApiKey 
+                            ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-200'
+                            : 'bg-slate-700 hover:bg-slate-800 shadow-slate-300'
+                        }`}
                     >
-                        <Play fill="currentColor" /> Start Session
+                         {!hasApiKey ? <Key size={20} /> : <Play fill="currentColor" />}
+                         {!hasApiKey ? 'Select API Key' : 'Start Session'}
                     </button>
                 ) : (
                     <>

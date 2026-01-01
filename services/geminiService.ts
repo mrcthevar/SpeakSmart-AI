@@ -1,28 +1,41 @@
 import { GoogleGenAI, LiveServerMessage, Modality, Type } from "@google/genai";
 import { createPCM16Blob, decodeAudioData } from "../utils";
 
-const API_KEY = process.env.API_KEY || '';
-
-// Initialize client
-const ai = new GoogleGenAI({ apiKey: API_KEY });
-
 // --- Content Generation (Assessment, Feedback) ---
 
 export const generateAssessmentFeedback = async (
   transcript: string, 
   context: string
 ): Promise<any> => {
-  if (!API_KEY) throw new Error("API Key missing");
+  const apiKey = process.env.API_KEY;
+  if (!apiKey) throw new Error("API Key missing");
+
+  // Initialize client with current key
+  const ai = new GoogleGenAI({ apiKey });
+
+  // If transcript is too short, return a graceful error or minimal feedback
+  if (!transcript || transcript.length < 10) {
+      return {
+          overallScore: 0,
+          metrics: [],
+          improvementTips: ["Session was too short to analyze."]
+      };
+  }
 
   const prompt = `
-    Analyze the following transcript from a communication exercise.
-    Context: ${context}
-    Transcript: "${transcript}"
+    You are an expert Communication Coach. Analyze the following conversation transcript.
     
+    Context/Scenario: ${context}
+    
+    Transcript:
+    "${transcript}"
+    
+    Evaluate the USER'S performance (not the AI's).
     Provide a JSON response with:
     - overallScore (0-100)
-    - metrics: Array of objects { category: string, score: number, details: string } (Categories: Pace, Clarity, Grammar, Vocabulary)
-    - improvementTips: Array of strings (3 specific actionable tips)
+    - metrics: Array of objects { category: string, score: number, details: string } 
+      (Categories must include: Pace, Clarity, Grammar, Vocabulary, Tone)
+    - improvementTips: Array of strings (3 specific, actionable tips based on mistakes in the transcript)
   `;
 
   const response = await ai.models.generateContent({
@@ -54,7 +67,12 @@ export const generateAssessmentFeedback = async (
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  try {
+      return JSON.parse(response.text || "{}");
+  } catch (e) {
+      console.error("Failed to parse feedback JSON", e);
+      return { overallScore: 0, metrics: [], improvementTips: ["Error analyzing session."] };
+  }
 };
 
 // --- Live API (Real-time Coaching) ---
@@ -79,16 +97,30 @@ export class LiveCoachSession {
   private callbacks: LiveSessionCallbacks;
   private nextStartTime = 0;
   private sources = new Set<AudioBufferSourceNode>();
+  
+  // Transcription state
+  private currentInputTranscription = '';
+  private currentOutputTranscription = '';
+  private transcriptHistory: { role: 'user' | 'model', text: string }[] = [];
 
   constructor(callbacks: LiveSessionCallbacks) {
     this.callbacks = callbacks;
   }
 
   async connect(systemInstruction: string, voiceName: string = 'Kore') {
-    if (!API_KEY) {
-      this.callbacks.onError("API Key is missing.");
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) {
+      this.callbacks.onError("API Key is missing. Please select a key.");
       return;
     }
+
+    // Initialize client with current key
+    const ai = new GoogleGenAI({ apiKey });
+
+    // Reset history
+    this.transcriptHistory = [];
+    this.currentInputTranscription = '';
+    this.currentOutputTranscription = '';
 
     try {
       this.inputAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
@@ -106,6 +138,9 @@ export class LiveCoachSession {
             voiceConfig: { prebuiltVoiceConfig: { voiceName } },
           },
           systemInstruction: systemInstruction,
+          // Enable transcription
+          inputAudioTranscription: { model: 'gemini-2.5-flash-native-audio-preview-09-2025' },
+          outputAudioTranscription: { model: 'gemini-2.5-flash-native-audio-preview-09-2025' },
         },
         callbacks: {
           onopen: () => {
@@ -152,13 +187,30 @@ export class LiveCoachSession {
   private async handleMessage(message: LiveServerMessage) {
     const serverContent = message.serverContent;
 
-    if (serverContent?.interrupted) {
-      this.callbacks.onInterrupted();
-      this.stopCurrentAudio();
+    // Handle Transcription
+    if (serverContent?.inputTranscription?.text) {
+        this.currentInputTranscription += serverContent.inputTranscription.text;
+    }
+    if (serverContent?.outputTranscription?.text) {
+        this.currentOutputTranscription += serverContent.outputTranscription.text;
     }
 
     if (serverContent?.turnComplete) {
+        if (this.currentInputTranscription.trim()) {
+            this.transcriptHistory.push({ role: 'user', text: this.currentInputTranscription.trim() });
+            this.currentInputTranscription = '';
+        }
+        if (this.currentOutputTranscription.trim()) {
+            this.transcriptHistory.push({ role: 'model', text: this.currentOutputTranscription.trim() });
+            this.currentOutputTranscription = '';
+        }
         this.callbacks.onTurnComplete();
+    }
+
+    if (serverContent?.interrupted) {
+      this.callbacks.onInterrupted();
+      this.stopCurrentAudio();
+      this.currentOutputTranscription = '';
     }
 
     const audioData = serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
@@ -203,7 +255,19 @@ export class LiveCoachSession {
     this.nextStartTime = 0;
   }
 
-  // Use base64ToUint8Array from utils, duplicate helper removed here as we import it.
+  getTranscript(): string {
+      // Flush any remaining partials
+      if (this.currentInputTranscription.trim()) {
+          this.transcriptHistory.push({ role: 'user', text: this.currentInputTranscription.trim() });
+      }
+      if (this.currentOutputTranscription.trim()) {
+          this.transcriptHistory.push({ role: 'model', text: this.currentOutputTranscription.trim() });
+      }
+      
+      return this.transcriptHistory
+        .map(t => `${t.role === 'user' ? 'User' : 'Coach'}: ${t.text}`)
+        .join('\n');
+  }
   
   disconnect() {
     if (this.sessionPromise) {
